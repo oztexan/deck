@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Deck Viewer (Three.js — v10 EW mirror, centered, planters 400mm deep, z -300..400)</title>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#0b0b0c; color:#eee; font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    #ui { position: fixed; top: 12px; left: 12px; z-index: 10; background: rgba(15,15,17,0.72); backdrop-filter: blur(6px);
+          border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
+    #ui h1 { font-size: 14px; font-weight: 600; margin: 0 0 6px 0; color: #fff; }
+    #ui .row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+    #ui label { display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap; }
+    #ui input[type="checkbox"] { accent-color:#8ec5ff; }
+    #ui button { background:#17181b; color:#eee; border:1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 6px 10px; cursor:pointer; }
+    #ui button:hover { background:#1e2024; }
+    #credits { position: fixed; right: 12px; bottom: 12px; opacity: .75; font-size: 12px; background: rgba(15,15,17,0.55);
+               padding:6px 8px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); }
+    canvas { display:block; width:100%; height:100%; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.159.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.159.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="ui">
+    <h1>Deck Viewer — mm units</h1>
+    <div class="row" style="margin-bottom:6px">
+      <label><input id="tDeck" type="checkbox" checked />Deck</label>
+      <label><input id="tStairs" type="checkbox" checked />Stairs</label>
+      <label><input id="tRails" type="checkbox" checked />Rails (deck + bridge)</label>
+      <label><input id="tPlanters" type="checkbox" checked />Planters</label>
+      <label><input id="tFireplace" type="checkbox" checked />Fireplace</label>
+      <label><input id="tHouse" type="checkbox" checked />House walls</label>
+      <label><input id="tWater" type="checkbox" checked />Water</label>
+      <label><input id="tArrow" type="checkbox" checked />North arrow</label>
+      <label><input id="tAxes" type="checkbox" />Axes</label>
+      <label><input id="tGrid" type="checkbox" />Grid</label>
+    </div>
+    <div class="row">
+      <button id="plan">Top‑down plan</button>
+      <button id="recenter">Recenter</button>
+      <button id="reset">Reset view</button>
+    </div>
+  </div>
+  <div id="credits">E/W mirror baked. Planters are 400mm deep and extrude to z = -300 mm.</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const WOOD=0x8f653f, PLANT=0x27733f, PLBOX=0x7b5a3d, BRICK=0x9a4838, CREAM=0xfbf8eb, STEEL=0xc0c4c6, WATER=0x3f73f2;
+    const mm = v => v / 1000;
+    const matDeck =  new THREE.MeshStandardMaterial({ color: WOOD,  metalness:0.05, roughness:0.68, side: THREE.DoubleSide });
+    const matPlan =  new THREE.MeshStandardMaterial({ color: PLBOX, metalness:0.05, roughness:0.68, side: THREE.DoubleSide });
+    const matLeaf =  new THREE.MeshStandardMaterial({ color: PLANT, metalness:0.02, roughness:0.92, side: THREE.DoubleSide });
+    const matBrick = new THREE.MeshStandardMaterial({ color: BRICK, metalness:0.05, roughness:0.85, side: THREE.DoubleSide });
+    const matCream = new THREE.MeshStandardMaterial({ color: CREAM, metalness:0.0,  roughness:0.95, side: THREE.DoubleSide });
+    const matSteel = new THREE.MeshStandardMaterial({ color: STEEL, metalness:0.25, roughness:0.45, side: THREE.DoubleSide });
+    const matWater = new THREE.MeshStandardMaterial({ color: WATER, metalness:0.0,  roughness:0.9,  side: THREE.DoubleSide });
+
+    function makeBox(b, mat){ const {x0,x1,y0,y1,z0,z1}=b;
+      const geom=new THREE.BoxGeometry(mm(x1-x0), mm(z1-z0), mm(y1-y0));
+      const mesh=new THREE.Mesh(geom, mat);
+      mesh.position.set(mm((x0+x1)/2), mm((z0+z1)/2), mm((y0+y1)/2));
+      return mesh;
+    }
+    const addBox=(g,b,mat)=>g.add(makeBox(b,mat));
+    const addPost=(g,x,y,z,h,s=45)=>addBox(g,{x0:x-s/2,x1:x+s/2,y0:y-s/2,y1:y+s/2,z0:z,z1:z+h},matDeck);
+    function addTopRail(g,x0,y0,x1,y1,zTop,w=45,h=45){ const dx=x1-x0,dy=y1-y0,L=Math.hypot(dx,dy); if(L<1e-3)return;
+      const geom=new THREE.BoxGeometry(mm(L),mm(h),mm(w)), mesh=new THREE.Mesh(geom,matDeck);
+      mesh.position.set(mm((x0+x1)/2), mm(zTop+h/2), mm((y0+y1)/2)); mesh.rotation.y = -Math.atan2(dy,dx); g.add(mesh); }
+
+    // Scene
+    const renderer=new THREE.WebGLRenderer({antialias:true}); renderer.setPixelRatio(Math.min(2,devicePixelRatio));
+    renderer.setSize(innerWidth,innerHeight); renderer.outputColorSpace=THREE.SRGBColorSpace; renderer.toneMapping=THREE.ACESFilmicToneMapping; document.body.appendChild(renderer.domElement);
+    const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b0b0c);
+    const camera=new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.01, 200); camera.position.set(-4.5,3.2,-4.2);
+    const controls=new OrbitControls(camera, renderer.domElement); controls.enableDamping=true;
+    scene.add(new THREE.AmbientLight(0xffffff,0.45)); const dir=new THREE.DirectionalLight(0xffffff,0.85); dir.position.set(-3,6,-3); scene.add(dir);
+
+    // Root (E/W mirror baked)
+    const gRoot=new THREE.Group(); gRoot.scale.x=-1; scene.add(gRoot);
+    const gDeck=new THREE.Group(), gStairs=new THREE.Group(), gRails=new THREE.Group(), gPlanters=new THREE.Group(),
+          gFire=new THREE.Group(), gHouse=new THREE.Group(), gWater=new THREE.Group(), gArrow=new THREE.Group();
+    gRoot.add(gDeck,gStairs,gRails,gPlanters,gFire,gHouse,gWater,gArrow);
+
+    // Deck
+    const DECK=25;
+    [{x0:4280,x1:7350,y0:0,y1:5700,z0:0,z1:DECK},
+     {x0:0,   x1:4280,y0:0,y1:4620,z0:0,z1:DECK},
+     {x0:3150,x1:4350,y0:-2000,y1:0,z0:0,z1:DECK}].forEach(b=>addBox(gDeck,b,matDeck));
+
+    // Stairs
+    const SY0=3420,SY1=4620,RISERS=4,RH=650/4,GO=270,TT=40;
+    for(let i=0;i<RISERS;i++){const xN=0-i*GO, x0=xN-GO, x1=xN, zT=-(i+1)*RH, zB=zT-TT; addBox(gStairs,{x0,x1,y0:SY0,y1:SY1,z0:zB,z1:zT},matDeck);}
+
+    // Bridge rails + deck rails by water
+    const PW=45,RHGT=600,PSP=1200;
+    const segs=[
+      {a:{x:4350,y:0}, b:{x:4350,y:-2000}},
+      {a:{x:3150,y:0}, b:{x:3150,y:-2000}},
+      {a:{x:1650,y:0}, b:{x:3150,y:0}},
+      {a:{x:4350,y:0}, b:{x:5850,y:0}},
+    ];
+    const L=(a,b)=>Math.hypot(b.x-a.x,b.y-a.y), I=(a,b,t)=>({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t});
+    segs.forEach(({a,b})=>{const len=L(a,b), n=Math.max(1,Math.floor(len/PSP)); for(let i=0;i<=n;i++){const p=I(a,b,i/n); addPost(gRails,p.x,p.y,0,RHGT,PW);} addTopRail(gRails,a.x,a.y,b.x,b.y,RHGT,45,45);});
+
+    // PLANETERS (all depth = 400, extruded to z=-300..400)
+    // West long planter (along west deck edge)
+    const WEST={x0:-400,x1:0,y0:0,y1:3420,z0:-300,z1:400};
+    addBox(gPlanters, WEST, matPlan);
+    addBox(gPlanters,{x0:WEST.x0+40,x1:WEST.x1-40,y0:WEST.y0+40,y1:WEST.y1-40,z0:60,z1:900},matLeaf);
+
+    // South-west cropped planter (stops before pond at x=1650), depth 400
+    const SWP={x0:0,x1:1650,y0:-400,y1:0,z0:-300,z1:400};
+    addBox(gPlanters, SWP, matPlan);
+    addBox(gPlanters,{x0:SWP.x0+40,x1:SWP.x1-40,y0:SWP.y0+40,y1:SWP.y1-40,z0:60,z1:900},matLeaf);
+
+    // East planter (fireplace → house wall), set depth to 400 (y:-400..0) and extrude down
+    const EAST={x0:6450,x1:7350,y0:-400,y1:0,z0:-300,z1:400};
+    addBox(gPlanters, EAST, matPlan);
+    addBox(gPlanters,{x0:EAST.x0+40,x1:EAST.x1-40,y0:EAST.y0+40,y1:EAST.y1-40,z0:60,z1:900},matLeaf);
+
+    // Fireplace
+    const FIRE={col:{x0:5250,x1:6450,y0:-910,y1:-10,z0:-400,z1:900}, chim:{c:[5850,-460], r:150, z0:900, z1:1500}};
+    addBox(gFire,FIRE.col,matBrick); {const [cx,cy]=FIRE.chim.c, r=FIRE.chim.r; const geo=new THREE.CylinderGeometry(mm(r),mm(r),mm(FIRE.chim.z1-FIRE.chim.z0),28,1,false); const m=new THREE.Mesh(geo,matSteel); m.position.set(mm(cx),mm((FIRE.chim.z0+FIRE.chim.z1)/2),mm(cy)); gFire.add(m);}
+
+    // House walls
+    [{x0:0,x1:4280,y0:4620,y1:4820,z0:0,z1:3000},{x0:4280,x1:4480,y0:4620,y1:5700,z0:0,z1:3000},{x0:4280,x1:7350,y0:5700,y1:5900,z0:0,z1:3000},{x0:7350,x1:7550,y0:0,y1:5700,z0:0,z1:3000}].forEach(b=>addBox(gHouse,b,matCream));
+
+    // WATER at z=-300..-290 mm (pond)
+    addBox(gWater,{x0:3150-1500,x1:4350+1500,y0:-2000,y1:0,z0:-300,z1:-290},matWater);
+
+    // North arrow
+    const arrowLen=mm(1200), origin=new THREE.Vector3(mm(-800), mm(60), mm(-800)); gArrow.add(new THREE.ArrowHelper(new THREE.Vector3(0,0,1), origin, arrowLen, 0x00aaff, mm(300), mm(120)));
+
+    // Centering helpers
+    function modelCenter(){ scene.updateMatrixWorld(true); const box=new THREE.Box3().setFromObject(gRoot); const c=new THREE.Vector3(); box.getCenter(c); return c; }
+    function recenter(keep=true){ const c=modelCenter(); if(keep){ const off=new THREE.Vector3().subVectors(camera.position,controls.target); controls.target.copy(c); camera.position.copy(c).add(off);} else {controls.target.copy(c);} controls.update(); return c; }
+    recenter(true);
+
+    // Axes & grid
+    const axes=new THREE.AxesHelper(2.5); axes.visible=false;
+    const grid=new THREE.GridHelper(14,14,0x2a2a2d,0x1a1a1c); grid.material.opacity=0.35; grid.material.transparent=true; grid.position.y=mm(-400); grid.visible=false; scene.add(axes,grid);
+
+    // UI
+    const $=s=>document.querySelector(s);
+    $('#tDeck').onchange=e=>gDeck.visible=e.target.checked;
+    $('#tStairs').onchange=e=>gStairs.visible=e.target.checked;
+    $('#tRails').onchange=e=>gRails.visible=e.target.checked;
+    $('#tPlanters').onchange=e=>gPlanters.visible=e.target.checked;
+    $('#tFireplace').onchange=e=>gFire.visible=e.target.checked;
+    $('#tHouse').onchange=e=>gHouse.visible=e.target.checked;
+    $('#tWater').onchange=e=>gWater.visible=e.target.checked;
+    $('#tArrow').onchange=e=>gArrow.visible=e.target.checked;
+    $('#tAxes').onchange=e=>axes.visible=e.target.checked;
+    $('#tGrid').onchange=e=>grid.visible=e.target.checked;
+
+    const defaultOffset=new THREE.Vector3(-4.5,3.2,-4.2);
+    document.getElementById('reset').onclick=()=>{ const c=modelCenter(); controls.target.copy(c); camera.position.copy(c).add(defaultOffset); controls.update(); };
+    document.getElementById('plan').onclick=()=>{ const c=modelCenter(); controls.target.copy(c); camera.position.set(c.x, mm(10000), c.z+0.0001); controls.update(); };
+    document.getElementById('recenter').onclick=()=>recenter(true);
+
+    addEventListener('resize', ()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+    (function render(){ requestAnimationFrame(render); controls.update(); renderer.render(scene,camera); })();
+  </script>
+</body>
+</html>
